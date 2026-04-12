@@ -17,13 +17,6 @@ from .config import settings
 
 logger = logging.getLogger(__name__)
 
-PLACEHOLDER_PHRASES = {
-    'intervention from paper',
-    'primary outcome',
-    'population from study',
-    'result from paper',
-}
-
 
 @dataclass
 class ExtractedClaim:
@@ -84,10 +77,7 @@ class LiteraturePipeline:
         if self.openai:
             prompt = (
                 'Extract up to 8 structured study claims as JSON array with fields: '
-                'population, intervention, outcome, result (positive|negative|null|mixed), study_type, confidence. '
-                'Use exact or near-exact terms from the paper text. Do not invent template phrases. '
-                'If a field cannot be grounded in the text, output "unknown". For comparative trials, name the '
-                'main tested intervention explicitly (e.g., "high-dose atorvastatin" not "intervention").'
+                'population, intervention, outcome, result (positive|negative|null|mixed), study_type, confidence.'
             )
             try:
                 response = await self.openai.responses.create(
@@ -99,7 +89,7 @@ class LiteraturePipeline:
                 )
                 content = response.output_text
                 raw_claims = json.loads(content)
-                claims = [
+                return [
                     ExtractedClaim(
                         population=c.get('population', 'unknown'),
                         intervention=c.get('intervention', 'unknown'),
@@ -110,7 +100,6 @@ class LiteraturePipeline:
                     )
                     for c in raw_claims
                 ]
-                return [self._sanitize_claim(claim) for claim in claims]
             except Exception as exc:
                 logger.exception('LLM extraction failed; falling back to heuristic parser: %s', exc)
 
@@ -127,87 +116,30 @@ class LiteraturePipeline:
                     result = 'negative'
                 else:
                     result = 'positive'
-                intervention = self._extract_intervention(sentence) or 'unknown'
-                outcome = self._extract_outcome(sentence) or 'unknown'
-                population = self._extract_population(full_text) or 'unknown'
                 claims.append(
                     ExtractedClaim(
-                        population=population,
-                        intervention=intervention,
-                        outcome=outcome,
+                        population='adults',
+                        intervention='intervention from paper',
+                        outcome='primary outcome',
                         result=result,
                         study_type='observational',
                         confidence=0.35,
                     )
                 )
-        if not claims:
-            claims = [ExtractedClaim(
+        return claims or [
+            ExtractedClaim(
                 population='unknown',
-                intervention='unknown',
-                outcome='unknown',
+                intervention='unspecified intervention',
+                outcome='unspecified outcome',
                 result='null',
                 study_type='observational',
                 confidence=0.2,
-            )]
-        return [self._sanitize_claim(claim) for claim in claims]
+            )
+        ]
 
     @staticmethod
     def claim_key(intervention: str, outcome: str) -> str:
         return f'{intervention.strip().lower()} -> {outcome.strip().lower()}'
-
-    @staticmethod
-    def _extract_population(text: str) -> str | None:
-        patterns = [
-            r'in ([a-z0-9\\-\\s]+ patients)',
-            r'among ([a-z0-9\\-\\s]+ adults)',
-            r'in ([a-z0-9\\-\\s]+ children)',
-        ]
-        lowered = text.lower()
-        for pattern in patterns:
-            match = re.search(pattern, lowered)
-            if match:
-                return match.group(1).strip()
-        return None
-
-    @staticmethod
-    def _extract_intervention(sentence: str) -> str | None:
-        lowered = sentence.lower()
-        match = re.search(r'([a-z0-9\\-\\s]{3,80})\\s(?:vs\\.?|versus|compared with)\\s', lowered)
-        if match:
-            return match.group(1).strip()
-        match = re.search(r'(treatment with|use of)\\s([a-z0-9\\-\\s]{3,80})', lowered)
-        if match:
-            return match.group(2).strip()
-        return None
-
-    @staticmethod
-    def _extract_outcome(sentence: str) -> str | None:
-        lowered = sentence.lower()
-        match = re.search(r'(?:improved|reduced|decreased|increased|no significant difference in)\\s([a-z0-9\\-\\s]{3,120})', lowered)
-        if match:
-            return match.group(1).strip(' .,;:')
-        match = re.search(r'(?:for|on)\\s([a-z0-9\\-\\s]{3,120})', lowered)
-        if match:
-            return match.group(1).strip(' .,;:')
-        return None
-
-    @staticmethod
-    def _sanitize_field(field_name: str, value: str) -> str:
-        cleaned = (value or 'unknown').strip().lower()
-        if cleaned in PLACEHOLDER_PHRASES or 'placeholder' in cleaned:
-            logger.warning('Placeholder-like %s detected ("%s"); replacing with "unknown".', field_name, value)
-            return 'unknown'
-        return cleaned or 'unknown'
-
-    def _sanitize_claim(self, claim: ExtractedClaim) -> ExtractedClaim:
-        return ExtractedClaim(
-            population=self._sanitize_field('population', claim.population),
-            intervention=self._sanitize_field('intervention', claim.intervention),
-            outcome=self._sanitize_field('outcome', claim.outcome),
-            result=claim.result if claim.result in {'positive', 'negative', 'null', 'mixed'} else 'null',
-            study_type=(claim.study_type or 'observational').lower(),
-            confidence=claim.confidence,
-        )
 
     @staticmethod
     def cluster_claims(vectors: list[list[float]], threshold: float = 0.25) -> list[int]:
