@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Evidentia Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 2rem; background: #f5f7fb; }
+      .card { background: white; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+      input, button, select { padding: .5rem; margin-right: .5rem; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { border-bottom: 1px solid #ddd; padding: .5rem; text-align: left; }
+    </style>
+  </head>
+  <body>
+    <h1>Evidentia — Structured Literature Reviews</h1>
+
+    <div class="card">
+      <h3>Ingest paper</h3>
+      <input type="file" id="paperFile" />
+      <button onclick="uploadPaper()">Upload</button>
+      <p id="ingestStatus"></p>
+    </div>
+
+    <div class="card">
+      <h3>Query claims</h3>
+      <input id="topic" placeholder="Topic (optional)" />
+      <input id="population" placeholder="Population filter" />
+      <select id="studyType">
+        <option value="">Any study type</option>
+        <option value="rct">RCT</option>
+        <option value="observational">Observational</option>
+      </select>
+      <button onclick="loadClaims()">Search</button>
+      <table>
+        <thead>
+          <tr><th>Claim</th><th>Result</th><th>Study Type</th><th>Confidence</th><th>Paper ID</th></tr>
+        </thead>
+        <tbody id="claimsBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Disagreement heatmap</h3>
+      <div id="heatmap" style="height: 500px"></div>
+    </div>
+
+    <script>
+      const api = '';
+
+      async function uploadPaper() {
+        const file = document.getElementById('paperFile').files[0];
+        if (!file) return;
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch(`${api}/ingest`, { method: 'POST', body: formData });
+        const data = await res.json();
+        document.getElementById('ingestStatus').innerText = `Queued paper ID: ${data.paper_id}`;
+      }
+
+      async function loadClaims() {
+        const topic = document.getElementById('topic').value;
+        const population = document.getElementById('population').value;
+        const studyType = document.getElementById('studyType').value;
+        const params = new URLSearchParams();
+        if (topic) params.set('topic', topic);
+        if (population) params.set('population', population);
+        if (studyType) params.set('study_type', studyType);
+
+        const res = await fetch(`${api}/claims?${params.toString()}`);
+        const claims = await res.json();
+        const tbody = document.getElementById('claimsBody');
+        tbody.innerHTML = '';
+        claims.forEach(claim => {
+          const row = document.createElement('tr');
+          row.innerHTML = `<td>${claim.claim_key}</td><td>${claim.result}</td><td>${claim.study_type}</td><td>${claim.confidence.toFixed(2)}</td><td>${claim.paper_id}</td>`;
+          tbody.appendChild(row);
+        });
+      }
+
+      async function loadHeatmap() {
+        const res = await fetch(`${api}/heatmap`);
+        const cells = await res.json();
+        const interventions = [...new Set(cells.map(c => c.intervention))];
+        const outcomes = [...new Set(cells.map(c => c.outcome))];
+
+        const z = interventions.map(i => outcomes.map(o => {
+          const cell = cells.find(c => c.intervention === i && c.outcome === o);
+          return cell ? cell.disagreement_score : 0;
+        }));
+
+        Plotly.newPlot('heatmap', [{
+          z,
+          x: outcomes,
+          y: interventions,
+          type: 'heatmap',
+          colorscale: 'Reds',
+          zmin: 0,
+          zmax: 1,
+        }], { title: 'Claim Disagreement (0 = consensus, 1 = high disagreement)' });
+      }
+
+      loadClaims();
+      loadHeatmap();
+    </script>
+  </body>
+</html>
