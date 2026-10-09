@@ -13,7 +13,7 @@ flowchart LR
     G --> BI[Power BI]
 ```
 
-Only the bronze layer exists so far. Silver, gold and the dashboard arrive in later PRs.
+Bronze and silver exist so far. Gold (dbt) and the dashboard arrive in later PRs.
 
 ## Layout
 
@@ -23,7 +23,10 @@ Only the bronze layer exists so far. Silver, gold and the dashboard arrive in la
 | `seed/seed_demo_data.py` | Inserts clearly labeled synthetic papers and claims, so everything runs without an OpenAI key. |
 | `export/bronze_export.py` | The bronze export job: Postgres → Parquet → local folder or S3. |
 | `export/schemas.py` | The explicit Parquet schemas for bronze. |
-| `tests/` | pytest suite. SQLite stands in for Postgres and `moto` fakes S3, so tests need no servers and no AWS account. |
+| `databricks/00_probe_s3_access.py` | Databricks notebook: checks whether Free Edition can reach your S3 bucket, and creates the landing volume. |
+| `databricks/01_bronze_to_silver.py` | Databricks notebook: runs the silver job and its data quality checks. |
+| `databricks/silver_transforms.py` | The silver logic as plain PySpark functions (imported by the notebook, unit-tested locally). |
+| `tests/` | pytest suite. SQLite stands in for Postgres, `moto` fakes S3, and a local Spark session runs the silver tests. |
 
 ## Bronze: what the export job does
 
@@ -34,6 +37,19 @@ Only the bronze layer exists so far. Silver, gold and the dashboard arrive in la
 5. Writes `bronze/_manifests/run_id=<run_id>.json` **last**. A run without a manifest crashed partway, and silver will skip it.
 
 Each run is a **full snapshot**: a claim exported on Monday and again on Tuesday appears in both partitions. That is normal for bronze, which keeps history raw. Silver deduplicates it.
+
+## Silver: what the PySpark job does
+
+`silver_transforms.run_bronze_to_silver` reads **every complete bronze run** (one with a manifest) and writes three Delta tables:
+
+1. **Enforces a schema.** Parquet is read with an explicit `StructType`, so a drifted file fails loudly instead of changing a column type downstream.
+2. **Dedupes snapshots.** Bronze holds each row once *per run*. A window (`row_number() over (partition by id order by _exported_at desc)`) keeps the newest version of each id. An id missing from the newest snapshot was deleted in Postgres, so it's kept and flagged `is_deleted` (a *soft delete*).
+3. **Normalizes values.** Text is trimmed, lowercased and whitespace-collapsed. `study_type` spellings map to one label (`randomized controlled trial` → `rct`, `cohort` → `observational`). Results like `no effect` map to `null`. Confidences on a 0–100 scale are rescaled to 0–1 and flagged `confidence_rescaled`. The cluster id is parsed out of `claim_key`.
+4. **Routes bad rows to `claims_rejects`** with a `reject_reason` (`invalid_result`, `invalid_confidence`, `orphan_paper`, `missing_intervention_or_outcome`) rather than dropping them silently.
+5. **Flags semantic duplicates.** Re-uploads of the same file point to the earliest paper (`canonical_paper_id`). The same finding repeated for one canonical paper is flagged `is_duplicate`, so gold counts it once.
+6. **Writes with Delta `MERGE`.** New ids are inserted. Existing ids are updated only when their `row_hash` (a SHA-256 of the business columns) changed. Re-running on the same bronze data changes nothing, which makes the job **idempotent**.
+
+On the seeded data (42 papers, 196 claims): 2 claims are rejected (`invalid_result`), 4 confidences are rescaled, 3 `no effect` results map to `null`, 2 papers are flagged as re-uploads, and 33 claims are flagged as duplicates. Most of those duplicates are the seed reporting the same finding twice within one paper.
 
 ## Running it locally (Windows PowerShell)
 
@@ -56,6 +72,8 @@ pytest
 ```
 
 The local export lands in `.\lake\bronze\...` (gitignored).
+
+The silver tests need Spark (`pip install -r lakehouse\requirements-spark.txt` and Java 17+). Without Spark installed they're skipped. Running Spark on Windows also needs Hadoop's `winutils.exe`, so it's easier to run the silver job in Databricks, which is what it's for.
 
 To also run the Postgres integration test, set `$env:EVIDENTIA_TEST_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/evidentia"` before `pytest`.
 
@@ -91,3 +109,15 @@ To also run the Postgres integration test, set `$env:EVIDENTIA_TEST_DATABASE_URL
 2. **IAM → Users** → delete `evidentia-lake-exporter`. Its access keys are deleted with it.
 3. **IAM → Policies** → delete `EvidentiaLakeAccess`.
 4. Optionally delete the zero-spend budget. It's free to keep.
+
+## Setting up Databricks Free Edition
+
+Free Edition is free and has no credit card. If you go over its daily compute quota, compute pauses until the next day; it never bills you.
+
+1. **Add the repo as a Git folder.** In the workspace, go to **Workspace → Create → Git folder** and paste `https://github.com/armita-jamshidi/AI_powered_literature_review_engine`. The repo is public, so no GitHub credentials are needed to read it.
+2. **Run the probe.** Open `lakehouse/databricks/00_probe_s3_access`, set the `s3_bronze_path` widget to `s3://YOUR-BUCKET/bronze`, and **Run all**. It reports whether Spark can read your bucket and creates the landing volume `/Volumes/workspace/evidentia/landing`.
+3. **Create a personal access token.** Click your avatar, then **Settings → Developer → Access tokens → Generate new token**. Name it `evidentia-local` and give it a 90-day lifetime. Put it in `lakehouse\.env` as `DATABRICKS_TOKEN`, and put your workspace URL (e.g. `https://dbc-xxxx.cloud.databricks.com`) in `DATABRICKS_HOST`.
+4. **Land bronze in the volume:** `python -m lakehouse.export.bronze_export --target s3,volume`
+5. **Build silver.** Open `lakehouse/databricks/01_bronze_to_silver` and **Run all**. Its default `bronze_path` is the volume.
+
+**Databricks teardown:** delete the token under **Settings → Developer → Access tokens**. Then run `DROP SCHEMA workspace.evidentia CASCADE` and `DROP SCHEMA workspace.evidentia_silver CASCADE` in the SQL editor.

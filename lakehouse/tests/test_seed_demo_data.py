@@ -25,6 +25,7 @@ def test_dataset_contains_the_mess_silver_must_clean():
     claims = [c for p in papers for c in p.claims]
     assert sum(c['confidence'] > 1 for c in claims) == 4
     assert sum(c['result'] == 'no effect' for c in claims) == 3
+    assert sum(c['result'] == 'improved' for c in claims) == 2
     assert {'rct', 'randomized controlled trial'} <= {c['study_type'] for c in claims}
     reuploaded = [f for f, n in Counter(p.source_filename for p in papers).items() if n > 1]
     assert len(reuploaded) == 2
@@ -47,3 +48,12 @@ def test_reset_removes_only_synthetic_rows(engine):
     with engine.connect() as conn:
         assert conn.execute(text('SELECT source_filename FROM papers')).scalars().all() == ['real.pdf']
         assert conn.execute(text('SELECT count(*) FROM claim_evidence')).scalar_one() == 0
+
+
+def test_values_fit_postgres_column_lengths():
+    # claim_evidence.result is VARCHAR(16) and study_type VARCHAR(64) in backend/app/models.py.
+    for paper in generate_dataset():
+        assert len(paper.source_filename) <= 256 and len(paper.title) <= 512
+        for claim in paper.claims:
+            assert len(claim['result']) <= 16
+            assert len(claim['study_type']) <= 64

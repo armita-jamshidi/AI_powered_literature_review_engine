@@ -165,3 +165,39 @@ def test_export_against_real_postgres(tmp_path):
     with pg.connect() as conn:
         assert manifest['tables']['claim_evidence']['rows'] == conn.execute(
             text('SELECT count(*) FROM claim_evidence')).scalar_one()
+
+
+def test_volume_writer_uploads_under_volume_path(seeded):
+    uploads = {}
+
+    class FakeFiles:
+        def upload(self, path, contents, overwrite=None):
+            uploads[path] = (contents.read(), overwrite)
+
+    class FakeWorkspace:
+        files = FakeFiles()
+
+    from lakehouse.export.bronze_export import VolumeWriter
+
+    manifest = run_export(seeded, VolumeWriter('/Volumes/workspace/evidentia/landing/', client=FakeWorkspace()),
+                          now=NOW)
+    key = '/Volumes/workspace/evidentia/landing/' + partition_key('bronze', 'claim_evidence', '2026-10-09', RUN_ID)
+    assert read_parquet(uploads[key][0]).num_rows == manifest['tables']['claim_evidence']['rows']
+    assert all(overwrite for _, overwrite in uploads.values())
+    assert manifest['manifest_uri'] == f'/Volumes/workspace/evidentia/landing/bronze/_manifests/run_id={RUN_ID}.json'
+
+
+def test_fan_out_writes_every_target(seeded, tmp_path):
+    from lakehouse.export.bronze_export import FanOutWriter
+
+    writer = FanOutWriter([LocalWriter(tmp_path / 'a'), LocalWriter(tmp_path / 'b')])
+    manifest = run_export(seeded, writer, now=NOW)
+    key = partition_key('bronze', 'papers', '2026-10-09', RUN_ID)
+    assert (tmp_path / 'a' / key).read_bytes() == (tmp_path / 'b' / key).read_bytes()
+    assert manifest['tables']['papers']['uri'] == str(tmp_path / 'a' / key)
+
+
+def test_volume_target_requires_path(monkeypatch):
+    monkeypatch.delenv('DATABRICKS_VOLUME_PATH', raising=False)
+    with pytest.raises(SystemExit, match='DATABRICKS_VOLUME_PATH'):
+        build_writer('volume')
