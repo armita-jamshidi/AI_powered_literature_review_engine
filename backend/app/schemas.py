@@ -30,3 +30,28 @@ class HeatmapCell(BaseModel):
 class IngestResponse(BaseModel):
     paper_id: int
     status: str
+
+
+class Study(BaseModel):
+    id: int
+    population: str
+    intervention: str
+    outcome: str
+    result: str
+    study_type: str
+
+
+class StudyCreate(BaseModel):
+    population: str
+    intervention: str
+    outcome: str
+    result: str
+    study_type: str
+
+
+class ClaimGroupOut(BaseModel):
+    claim_key: str
+    intervention: str
+    outcome: str
+    result_counts: dict[str, int]
+    total_studies: int

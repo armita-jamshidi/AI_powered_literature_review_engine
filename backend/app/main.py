@@ -5,7 +5,7 @@ import logging
 from collections import defaultdict
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import select
@@ -16,7 +16,7 @@ from .config import settings
 from .db import Base, SessionLocal, engine, get_db
 from .models import ClaimEvidence, Paper, PaperChunk
 from .pipeline import LiteraturePipeline, weighted_majority_fraction
-from .schemas import ClaimOut, HeatmapCell, IngestResponse, PaperOut
+from .schemas import ClaimGroupOut, ClaimOut, HeatmapCell, IngestResponse, PaperOut, Study, StudyCreate
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title='Evidentia API')
 pipeline = LiteraturePipeline()
 query_cache = TTLCache(settings.cache_ttl_seconds)
+study_store: list[Study] = []
+study_id_counter = 1
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,8 +48,24 @@ async def root() -> FileResponse:
     return FileResponse(dashboard)
 
 
-@app.post('/ingest', response_model=IngestResponse)
-async def ingest_paper(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+@app.post('/ingest', response_model=IngestResponse | Study)
+async def ingest_paper(
+    request: Request,
+    file: UploadFile | None = File(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    global study_id_counter
+    if request.headers.get('content-type', '').startswith('application/json'):
+        body = await request.json()
+        study = Study(id=study_id_counter, **StudyCreate(**body).model_dump())
+        study_store.append(study)
+        study_id_counter += 1
+        query_cache.clear()
+        return study
+
+    if file is None:
+        raise HTTPException(status_code=400, detail='Provide either JSON study payload or a file upload')
+
     raw_data = await file.read()
     if not raw_data:
         raise HTTPException(status_code=400, detail='Empty upload')
@@ -137,7 +155,7 @@ async def list_papers(db: AsyncSession = Depends(get_db)):
     ]
 
 
-@app.get('/claims', response_model=list[ClaimOut])
+@app.get('/claims', response_model=list[ClaimGroupOut] | list[ClaimOut])
 async def claims(
     topic: str | None = Query(default=None),
     population: str | None = Query(default=None),
@@ -148,6 +166,33 @@ async def claims(
     cached = query_cache.get(cache_key)
     if cached is not None:
         return cached
+
+    if study_store:
+        grouped: dict[tuple[str, str], list[Study]] = defaultdict(list)
+        for study in study_store:
+            if topic and topic.lower() not in f'{study.intervention} {study.outcome}'.lower():
+                continue
+            if population and population.lower() not in study.population.lower():
+                continue
+            if study_type and study_type.lower() not in study.study_type.lower():
+                continue
+            grouped[(study.intervention, study.outcome)].append(study)
+        payload: list[ClaimGroupOut] = []
+        for (intervention, outcome), studies in grouped.items():
+            counts: dict[str, int] = defaultdict(int)
+            for study in studies:
+                counts[study.result] += 1
+            payload.append(
+                ClaimGroupOut(
+                    claim_key=pipeline.claim_key(intervention, outcome),
+                    intervention=intervention,
+                    outcome=outcome,
+                    result_counts=dict(counts),
+                    total_studies=len(studies),
+                )
+            )
+        query_cache.set(cache_key, payload)
+        return payload
 
     stmt = select(ClaimEvidence)
     if topic:
@@ -183,23 +228,42 @@ async def heatmap(db: AsyncSession = Depends(get_db)):
     if cached is not None:
         return cached
 
-    rows = (await db.execute(select(ClaimEvidence))).scalars().all()
-    matrix: dict[tuple[str, str], list[ClaimEvidence]] = defaultdict(list)
-    for row in rows:
-        matrix[(row.intervention, row.outcome)].append(row)
+    matrix: dict[tuple[str, str], list[str]] = defaultdict(list)
+    if study_store:
+        for study in study_store:
+            matrix[(study.intervention, study.outcome)].append(study.result)
+    else:
+        rows = (await db.execute(select(ClaimEvidence))).scalars().all()
+        for row in rows:
+            matrix[(row.intervention, row.outcome)].append(row.result)
 
     cells: list[HeatmapCell] = []
-    for (intervention, outcome), studies in matrix.items():
-        results = [s.result for s in studies]
-        types = [s.study_type for s in studies]
-        majority_fraction = weighted_majority_fraction(results, types)
-        disagreement = round(1 - majority_fraction, 4)
+    for (intervention, outcome), results in matrix.items():
+        if study_store:
+            total = len(results)
+            counts: dict[str, int] = defaultdict(int)
+            for result in results:
+                counts[result] += 1
+            majority_count = max(counts.values()) if counts else 0
+            disagreement = round(1 - (majority_count / total if total else 0.0), 4)
+        else:
+            rows = (await db.execute(
+                select(ClaimEvidence).where(
+                    ClaimEvidence.intervention == intervention,
+                    ClaimEvidence.outcome == outcome,
+                )
+            )).scalars().all()
+            majority_fraction = weighted_majority_fraction(
+                [s.result for s in rows],
+                [s.study_type for s in rows],
+            )
+            disagreement = round(1 - majority_fraction, 4)
         cells.append(
             HeatmapCell(
                 intervention=intervention,
                 outcome=outcome,
                 disagreement_score=disagreement,
-                total_studies=len(studies),
+                total_studies=len(results),
             )
         )
 
