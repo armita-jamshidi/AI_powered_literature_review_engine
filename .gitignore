@@ -3,3 +3,6 @@ __pycache__/
 .env
 backend/.venv/
 backend/.chroma/
+.pytest_cache/
+# Local output of the bronze export (--target local)
+lake/

@@ -56,6 +56,9 @@ uvicorn app.main:app --reload
 
 If `OPENAI_API_KEY` is not provided, Evidentia uses deterministic fallback heuristics and synthetic embeddings.
 
+## Lakehouse (analytics layer)
+A medallion-style lakehouse (Postgres → S3 Parquet → Databricks Delta → dbt → Power BI) is being built in [`lakehouse/`](lakehouse/README.md). It runs alongside the app and never writes to the app's database.
+
 ## Notes on pipeline behavior
 - Ingestion runs asynchronously so one bad paper does not block others.
 - Failed ingestions are marked with `ingest_status=failed` and `ingest_error` populated.
