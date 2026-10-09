@@ -1,0 +1,7 @@
+# Dependencies for the lakehouse jobs (separate from backend/requirements.txt,
+# so the FastAPI app's image doesn't change).
+pyarrow==18.1.0
+boto3==1.35.54
+psycopg[binary]==3.2.3
+sqlalchemy==2.0.36
+python-dotenv==1.0.1
