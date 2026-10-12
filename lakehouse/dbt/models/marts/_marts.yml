@@ -1,0 +1,87 @@
+version: 2
+
+models:
+  - name: dim_papers
+    description: Live canonical papers, with the number of claims each contributes.
+    columns:
+      - name: paper_id
+        data_tests: [unique, not_null]
+
+  - name: fct_claims
+    description: >
+      One row per live, de-duplicated claim, with its study-type weight. Grain: claim_id.
+      Joins to dim_papers on paper_id and to study_type_weights on study_type.
+    columns:
+      - name: claim_id
+        data_tests: [unique, not_null]
+      - name: paper_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_papers')
+                field: paper_id
+      - name: result
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['positive', 'negative', 'null', 'mixed']
+      - name: study_weight
+        description: Evidence weight of the claim's study design (from the study_type_weights seed).
+        data_tests: [not_null]
+      - name: confidence_bucket
+        description: Lower edge of the claim's 0.1-wide confidence bucket.
+        data_tests:
+          - value_between:
+              arguments:
+                min_value: 0
+                max_value: 0.9
+
+  - name: gold_claims_by_intervention_outcome
+    description: Claim counts per intervention x outcome pair, split by result.
+    columns:
+      - name: claim_pair
+        description: '"intervention -> outcome", the grain of this table.'
+        data_tests: [unique, not_null]
+      - name: n_claims
+        data_tests: [not_null]
+
+  - name: gold_weighted_disagreement
+    description: >
+      Study-type-weighted disagreement per intervention x outcome pair. Each claim votes
+      for its result with its study design's weight; the score is 1 minus the winning
+      result's share of the total weight.
+    columns:
+      - name: claim_pair
+        data_tests: [unique, not_null]
+      - name: weighted_majority_result
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['positive', 'negative', 'null', 'mixed']
+      - name: weighted_disagreement_score
+        description: 0 = all studies agree; 0.75 = the four results are evenly split.
+        data_tests:
+          - not_null
+          - value_between:
+              arguments:
+                min_value: 0
+                max_value: 0.75
+      - name: unweighted_disagreement_score
+        description: Same score with every claim weighted equally, for comparison.
+        data_tests:
+          - value_between:
+              arguments:
+                min_value: 0
+                max_value: 0.75
+
+  - name: gold_confidence_distribution
+    description: Histogram of extractor confidence by study design and result.
+    columns:
+      - name: n_claims
+        data_tests: [not_null]
+      - name: result
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['positive', 'negative', 'null', 'mixed']

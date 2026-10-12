@@ -1,0 +1,20 @@
+version: 2
+
+sources:
+  - name: silver
+    description: Delta tables written by the PySpark silver job (lakehouse/databricks/silver_transforms.py).
+    # On Databricks this is the Unity Catalog catalog. Plain Spark has no catalogs
+    # and requires database to equal the schema.
+    database: "{{ target.database if target.type == 'databricks' else var('silver_schema') }}"
+    schema: "{{ var('silver_schema') }}"
+    tables:
+      - name: papers
+        description: One row per paper id, cleaned, with re-upload and soft-delete flags.
+        columns:
+          - name: paper_id
+            data_tests: [unique, not_null]
+      - name: claims
+        description: One row per claim id, cleaned, with duplicate and soft-delete flags.
+        columns:
+          - name: claim_id
+            data_tests: [unique, not_null]

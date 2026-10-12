@@ -13,7 +13,7 @@ flowchart LR
     G --> BI[Power BI]
 ```
 
-Bronze and silver exist so far. Gold (dbt) and the dashboard arrive in later PRs.
+Bronze, silver and gold exist so far. The Power BI dashboard arrives in a later PR.
 
 ## Layout
 
@@ -26,6 +26,7 @@ Bronze and silver exist so far. Gold (dbt) and the dashboard arrive in later PRs
 | `databricks/00_probe_s3_access.py` | Databricks notebook: checks whether Free Edition can reach your S3 bucket, and creates the landing volume. |
 | `databricks/01_bronze_to_silver.py` | Databricks notebook: runs the silver job and its data quality checks. |
 | `databricks/silver_transforms.py` | The silver logic as plain PySpark functions (imported by the notebook, unit-tested locally). |
+| `dbt/` | The dbt project for the gold layer: staging views, a fact and a dimension table, three gold marts, a seed, and tests. |
 | `tests/` | pytest suite. SQLite stands in for Postgres, `moto` fakes S3, and a local Spark session runs the silver tests. |
 
 ## Bronze: what the export job does
@@ -50,6 +51,24 @@ Each run is a **full snapshot**: a claim exported on Monday and again on Tuesday
 6. **Writes with Delta `MERGE`.** New ids are inserted. Existing ids are updated only when their `row_hash` (a SHA-256 of the business columns) changed. Re-running on the same bronze data changes nothing, which makes the job **idempotent**.
 
 On the seeded data (42 papers, 196 claims): 2 claims are rejected (`invalid_result`), 4 confidences are rescaled, 3 `no effect` results map to `null`, 2 papers are flagged as re-uploads, and 33 claims are flagged as duplicates. Most of those duplicates are the seed reporting the same finding twice within one paper.
+
+## Gold: the dbt project (ELT)
+
+Silver gets data *loaded* into Databricks. Gold then *transforms it inside the warehouse* with SQL, which is the "LT" of **ELT**. dbt compiles each model into a `CREATE TABLE/VIEW ... AS SELECT` on the Databricks SQL warehouse, works out the build order from `ref()`, and runs tests after each model.
+
+| Model | Type | What it is |
+|---|---|---|
+| `stg_papers`, `stg_claims` | view | Silver minus deleted rows and duplicates; claims are attributed to the canonical paper. |
+| `study_type_weights` | seed (CSV) | RCT 1.0 … case report 0.3, the same weights as `backend/app/pipeline.py`. |
+| `fct_claims` | table | One row per live claim, with its study weight and confidence bucket. |
+| `dim_papers` | table | One row per live paper, with its claim count. |
+| `gold_claims_by_intervention_outcome` | table | Claims per intervention × outcome, split by result. |
+| `gold_weighted_disagreement` | table | `1 − (weight of the winning result / total weight)` per pair, plus the unweighted score for comparison. |
+| `gold_confidence_distribution` | table | Confidence histogram by study type and result. |
+
+**Tests (43 in all):** `unique`/`not_null` on every key; `accepted_values` on `result` and `ingest_status`; `relationships` from claims to papers and to the weights seed; a custom generic test `value_between` (confidence in [0, 1], disagreement in [0, 0.75]); and two singular tests. One checks that every claim is counted exactly once in each mart, the other that a pair whose claims all agree scores 0.
+
+`lakehouse/tests/test_dbt_gold.py` runs the whole chain (seed → bronze → silver → `dbt build`) on a local Spark session. It also checks that every gold disagreement score equals what the API's `weighted_majority_fraction()` computes from the same claims. On the seeded data, `mindfulness meditation → anxiety symptoms` disagrees most (0.66), and `statins → ldl cholesterol` disagrees least (0.0).
 
 ## Running it locally (Windows PowerShell)
 
@@ -120,4 +139,28 @@ Free Edition is free and has no credit card. If you go over its daily compute qu
 4. **Land bronze in the volume:** `python -m lakehouse.export.bronze_export --target s3,volume`
 5. **Build silver.** Open `lakehouse/databricks/01_bronze_to_silver` and **Run all**. Its default `bronze_path` is the volume.
 
-**Databricks teardown:** delete the token under **Settings → Developer → Access tokens**. Then run `DROP SCHEMA workspace.evidentia CASCADE` and `DROP SCHEMA workspace.evidentia_silver CASCADE` in the SQL editor.
+### Running dbt against Databricks
+
+1. **Find the warehouse.** Go to **SQL Warehouses**, open the Serverless Starter Warehouse (Free Edition's one warehouse), then **Connection details**. Copy the **HTTP path** into `lakehouse\.env` as `DATABRICKS_HTTP_PATH`.
+2. **Install dbt** in its own virtual environment, so its dependencies stay separate from the export job's:
+   ```powershell
+   python -m venv .venv-dbt
+   .\.venv-dbt\Scripts\Activate.ps1
+   pip install -r lakehouse\requirements-dbt.txt
+   ```
+3. **Load `.env` into the shell.** dbt reads environment variables, not `.env` files. `profiles.yml` contains no secrets, only `env_var(...)` lookups.
+   ```powershell
+   Get-Content lakehouse\.env | Where-Object { $_ -match '^[A-Z_]+=' } | ForEach-Object {
+       $name, $value = $_ -split '=', 2; Set-Item "env:$name" $value }
+   ```
+4. **Build and test:**
+   ```powershell
+   cd lakehouse\dbt
+   dbt debug --profiles-dir .          # checks the connection
+   dbt build --profiles-dir .          # seed + models + tests, in dependency order
+   dbt docs generate --profiles-dir .
+   dbt docs serve --profiles-dir .     # opens the docs site with the lineage graph
+   ```
+   `dbt docs generate` needs Databricks; it doesn't work on the local Spark test target.
+
+**Databricks teardown:** delete the token under **Settings → Developer → Access tokens**. Then run `DROP SCHEMA workspace.evidentia CASCADE`, `DROP SCHEMA workspace.evidentia_silver CASCADE` and `DROP SCHEMA workspace.evidentia_gold CASCADE` in the SQL editor.

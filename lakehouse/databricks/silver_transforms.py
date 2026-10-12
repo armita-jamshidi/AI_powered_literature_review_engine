@@ -17,6 +17,7 @@ What silver guarantees, compared with bronze:
 """
 from __future__ import annotations
 
+from pyspark.errors import AnalysisException
 from pyspark.sql import Column, DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
@@ -92,7 +93,12 @@ STUDY_TYPE_CANONICAL = {
 def complete_run_ids(spark: SparkSession, bronze_path: str) -> list[str]:
     """Run ids that have a manifest. The export writes the manifest last, so a
     run without one crashed partway and must not be read."""
-    manifests = spark.read.option('multiLine', True).json(f'{bronze_path}/_manifests/')
+    # Spark treats paths starting with "_" as hidden, so glob the files explicitly
+    # rather than pointing it at the _manifests folder.
+    try:
+        manifests = spark.read.option('multiLine', True).json(f'{bronze_path}/_manifests/*.json')
+    except AnalysisException:  # the glob matched nothing
+        return []
     return sorted(r.run_id for r in manifests.select('run_id').distinct().collect())
 
 

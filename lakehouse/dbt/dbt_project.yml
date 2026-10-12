@@ -1,0 +1,32 @@
+name: evidentia
+version: '1.0.0'
+config-version: 2
+profile: evidentia
+
+model-paths: ['models']
+seed-paths: ['seeds']
+test-paths: ['tests']
+macro-paths: ['macros']
+target-path: target
+clean-targets: ['target', 'dbt_packages', 'logs']
+
+vars:
+  # Where the PySpark silver job writes (lakehouse/databricks/01_bronze_to_silver.py).
+  silver_schema: evidentia_silver
+
+models:
+  evidentia:
+    +file_format: delta
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
+
+seeds:
+  evidentia:
+    +file_format: delta
+    study_type_weights:
+      +column_types:
+        study_type: string
+        weight: double
+        evidence_rank: int

@@ -6,3 +6,8 @@ backend/.chroma/
 .pytest_cache/
 # Local output of the bronze export (--target local)
 lake/
+# dbt build output
+lakehouse/dbt/target/
+lakehouse/dbt/logs/
+lakehouse/dbt/dbt_packages/
+lakehouse/dbt/.user.yml

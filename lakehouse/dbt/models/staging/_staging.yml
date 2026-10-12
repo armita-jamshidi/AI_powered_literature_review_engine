@@ -1,0 +1,52 @@
+version: 2
+
+models:
+  - name: stg_papers
+    description: Live papers, one row per canonical paper.
+    columns:
+      - name: paper_id
+        description: Primary key (the app's papers.id).
+        data_tests: [unique, not_null]
+      - name: ingest_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['pending', 'processing', 'processed', 'failed']
+
+  - name: stg_claims
+    description: Live, de-duplicated claims attributed to their canonical paper.
+    columns:
+      - name: claim_id
+        description: Primary key (the app's claim_evidence.id).
+        data_tests: [unique, not_null]
+      - name: paper_id
+        description: Canonical paper this claim belongs to.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_papers')
+                field: paper_id
+      - name: result
+        description: Direction of the reported effect.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['positive', 'negative', 'null', 'mixed']
+      - name: study_type
+        description: Normalized study design.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('study_type_weights')
+                field: study_type
+      - name: confidence
+        description: Extractor confidence, rescaled to [0, 1] in silver.
+        data_tests:
+          - not_null
+          - value_between:
+              arguments:
+                min_value: 0
+                max_value: 1

@@ -1,0 +1,25 @@
+# No secrets live in this file: every credential comes from an environment variable.
+# Load lakehouse/.env into your shell first (see lakehouse/README.md), then run dbt
+# from this folder with:  dbt build --profiles-dir .
+evidentia:
+  target: databricks
+  outputs:
+    databricks:
+      type: databricks
+      catalog: workspace
+      schema: evidentia_gold
+      # Accepts the host with or without https://
+      host: "{{ env_var('DATABRICKS_HOST') | replace('https://', '') | replace('/', '') }}"
+      # SQL Warehouses -> your warehouse -> Connection details -> HTTP path
+      http_path: "{{ env_var('DATABRICKS_HTTP_PATH') }}"
+      token: "{{ env_var('DATABRICKS_TOKEN') }}"
+      threads: 4
+
+    # Used only by the automated tests: runs the same models on a local Spark
+    # session with Delta Lake, so the SQL is checked without a Databricks workspace.
+    local_spark:
+      type: spark
+      method: session
+      host: localhost
+      schema: evidentia_gold
+      threads: 1
