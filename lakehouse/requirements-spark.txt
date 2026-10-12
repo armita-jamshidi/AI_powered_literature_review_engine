@@ -1,0 +1,5 @@
+# Only for running the silver/Spark tests locally (needs Java 17+).
+# On Databricks, Spark and Delta are already installed.
+-r requirements-dev.txt
+pyspark==4.0.1
+delta-spark==4.0.0

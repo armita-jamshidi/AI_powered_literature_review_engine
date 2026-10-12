@@ -18,6 +18,7 @@ runs that have a manifest, so a run that crashed halfway is never read.
 Usage (from the repo root):
     python -m lakehouse.export.bronze_export --target local   # writes ./lake/bronze/...
     python -m lakehouse.export.bronze_export --target s3      # needs S3_BUCKET + AWS credentials
+    python -m lakehouse.export.bronze_export --target s3,volume  # also copy into a Databricks volume
 """
 from __future__ import annotations
 
@@ -169,22 +170,72 @@ def run_export(engine: Engine, writer: Writer, prefix: str = 'bronze', now: date
     return manifest
 
 
-def build_writer(target: str) -> tuple[Writer, str]:
-    prefix = os.getenv('LAKE_PREFIX', 'bronze')
+class VolumeWriter:
+    """Writes into a Databricks Unity Catalog volume through the Files API.
+
+    Databricks Free Edition can't be pointed at your own S3 bucket, so this
+    copies the same bronze files into a volume that Databricks can read. S3
+    stays the data lake of record; the volume is Databricks' landing copy.
+    """
+
+    def __init__(self, volume_path: str, client=None):
+        self.volume_path = volume_path.rstrip('/')
+        if client is None:
+            from databricks.sdk import WorkspaceClient
+
+            # Reads DATABRICKS_HOST and DATABRICKS_TOKEN from the environment.
+            client = WorkspaceClient()
+        self.client = client
+
+    def put(self, key: str, data: bytes) -> str:
+        path = f'{self.volume_path}/{key}'
+        self.client.files.upload(path, io.BytesIO(data), overwrite=True)
+        return path
+
+
+class FanOutWriter:
+    """Writes every file to several targets. Returns the first target's URI."""
+
+    def __init__(self, writers: list[Writer]):
+        self.writers = writers
+
+    def put(self, key: str, data: bytes) -> str:
+        return [w.put(key, data) for w in self.writers][0]
+
+
+TARGETS = ('local', 's3', 'volume')
+
+
+def _single_writer(target: str) -> Writer:
     if target == 'local':
-        return LocalWriter(os.getenv('LOCAL_LAKE_DIR', './lake')), prefix
+        return LocalWriter(os.getenv('LOCAL_LAKE_DIR', './lake'))
     if target == 's3':
         bucket = os.getenv('S3_BUCKET')
         if not bucket:
             raise SystemExit('S3_BUCKET is not set. Add it to your .env (see lakehouse/.env.example).')
-        return S3Writer(bucket), prefix
-    raise SystemExit(f'Unknown target {target!r}; use "local" or "s3".')
+        return S3Writer(bucket)
+    if target == 'volume':
+        volume = os.getenv('DATABRICKS_VOLUME_PATH')
+        if not volume:
+            raise SystemExit('DATABRICKS_VOLUME_PATH is not set. Add it to your .env (see lakehouse/.env.example).')
+        return VolumeWriter(volume)
+    raise SystemExit(f'Unknown target {target!r}; use one of {", ".join(TARGETS)}.')
+
+
+def build_writer(target: str) -> tuple[Writer, str]:
+    """`target` is one name or a comma-separated list, e.g. "s3,volume"."""
+    prefix = os.getenv('LAKE_PREFIX', 'bronze')
+    writers = [_single_writer(t.strip()) for t in target.split(',') if t.strip()]
+    if not writers:
+        raise SystemExit(f'No target given; use one or more of {", ".join(TARGETS)}.')
+    return (writers[0] if len(writers) == 1 else FanOutWriter(writers)), prefix
 
 
 def main(argv: list[str] | None = None) -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(description='Export Evidentia tables to the bronze layer as Parquet.')
-    parser.add_argument('--target', choices=('local', 's3'), default=os.getenv('LAKE_TARGET', 'local'))
+    parser.add_argument('--target', default=os.getenv('LAKE_TARGET', 'local'),
+                        help='local, s3 or volume; comma-separate to write to several, e.g. s3,volume')
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 

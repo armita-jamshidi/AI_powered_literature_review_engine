@@ -13,7 +13,8 @@ The data is deliberately a little messy, the way LLM extraction output is in
 practice, so the silver layer has real cleaning work to do:
   * study_type spelled several ways ("rct", "randomized controlled trial", "cohort")
   * a few confidences on a 0-100 scale instead of 0-1
-  * a few results outside the allowed set ("no effect")
+  * a few results outside the allowed set ("no effect", which silver can map
+    to "null", and "improved", which it must reject)
   * two papers uploaded twice, producing duplicate claims
 
 Usage (from the repo root, with the app's tables already created by starting the API once):
@@ -141,11 +142,13 @@ def generate_dataset(n_papers: int = 40, seed: int = 42, now: datetime | None = 
 
 def _inject_messiness(rng: random.Random, papers: list[SyntheticPaper]) -> None:
     claims = [c for p in papers for c in p.claims]
-    messy = rng.sample(claims, k=min(7, len(claims)))
+    messy = rng.sample(claims, k=min(9, len(claims)))
     for claim in messy[:4]:
         claim['confidence'] = round(claim['confidence'] * 100, 1)  # 0-100 scale slip
-    for claim in messy[4:]:
-        claim['result'] = 'no effect'  # outside positive|negative|null|mixed
+    for claim in messy[4:7]:
+        claim['result'] = 'no effect'  # outside the vocabulary, but means "null"
+    for claim in messy[7:]:
+        claim['result'] = 'improved'  # can't be mapped to a direction
 
     # Re-uploads: the same file ingested twice yields a second paper row with identical claims.
     processed = [p for p in papers if p.claims]
