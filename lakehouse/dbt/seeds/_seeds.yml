@@ -1,0 +1,17 @@
+version: 2
+
+seeds:
+  - name: study_type_weights
+    description: >
+      Evidence weight per study design, copied from STUDY_WEIGHTS in backend/app/pipeline.py
+      so gold scores match the API. 'other' gets 0.5, the API's default for unknown designs.
+    columns:
+      - name: study_type
+        data_tests: [unique, not_null]
+      - name: weight
+        data_tests:
+          - not_null
+          - value_between:
+              arguments:
+                min_value: 0
+                max_value: 1

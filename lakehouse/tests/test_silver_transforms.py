@@ -21,24 +21,6 @@ from lakehouse.seed.seed_demo_data import generate_dataset, insert_dataset  # no
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
 
-@pytest.fixture(scope='module')
-def spark(tmp_path_factory):
-    from delta import configure_spark_with_delta_pip
-
-    builder = (
-        SparkSession.builder.master('local[2]').appName('evidentia-silver-tests')
-        .config('spark.sql.extensions', 'io.delta.sql.DeltaSparkSessionExtension')
-        .config('spark.sql.catalog.spark_catalog', 'org.apache.spark.sql.delta.catalog.DeltaCatalog')
-        .config('spark.sql.warehouse.dir', str(tmp_path_factory.mktemp('warehouse')))
-        .config('spark.sql.session.timeZone', 'UTC')
-        .config('spark.sql.shuffle.partitions', '2')
-        .config('spark.ui.enabled', 'false')
-    )
-    session = configure_spark_with_delta_pip(builder).getOrCreate()
-    yield session
-    session.stop()
-
-
 @pytest.fixture
 def schema(spark, request):
     name = 'silver_' + request.node.name.replace('[', '_').replace(']', '').replace('-', '_')
@@ -157,3 +139,10 @@ def test_end_to_end_from_bronze_export_is_idempotent(spark, schema, engine, tmp_
     assert int(last_merge.operationMetrics['numTargetRowsUpdated']) == 0
     assert int(last_merge.operationMetrics['numTargetRowsInserted']) == 0
     assert spark.sql(f'DESCRIBE HISTORY {schema}.claims').count() == version_after_first + 1
+
+
+def test_no_manifests_means_no_runs(spark, tmp_path):
+    (tmp_path / 'bronze' / 'claim_evidence').mkdir(parents=True)
+    assert st.complete_run_ids(spark, str(tmp_path / 'bronze')) == []
+    with pytest.raises(ValueError, match='No complete bronze runs'):
+        st.run_bronze_to_silver(spark, str(tmp_path / 'bronze'), 'unused')

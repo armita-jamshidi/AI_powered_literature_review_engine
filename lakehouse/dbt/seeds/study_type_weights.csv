@@ -1,0 +1,8 @@
+study_type,weight,evidence_rank
+rct,1.0,1
+quasi-experimental,0.8,2
+observational,0.6,3
+case-control,0.5,4
+cross-sectional,0.45,5
+case report,0.3,6
+other,0.5,7

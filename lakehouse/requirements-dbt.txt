@@ -1,0 +1,4 @@
+# dbt for the gold layer. Install into its own virtual environment:
+#   pip install -r lakehouse/requirements-dbt.txt
+dbt-core==1.10.19
+dbt-databricks==1.10.19

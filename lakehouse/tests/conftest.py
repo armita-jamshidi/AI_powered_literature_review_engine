@@ -1,3 +1,4 @@
+import importlib.util
 import sqlite3
 
 import pytest
@@ -28,3 +29,25 @@ def engine():
             conn.execute(text(stmt))
     yield eng
     eng.dispose()
+
+
+@pytest.fixture(scope='session')
+def spark(tmp_path_factory):
+    """One local Spark session with Delta Lake, shared by the silver and dbt tests."""
+    if not (importlib.util.find_spec('pyspark') and importlib.util.find_spec('delta')):
+        pytest.skip('pyspark/delta-spark not installed (pip install -r lakehouse/requirements-spark.txt)')
+    from delta import configure_spark_with_delta_pip
+    from pyspark.sql import SparkSession
+
+    builder = (
+        SparkSession.builder.master('local[2]').appName('evidentia-lakehouse-tests')
+        .config('spark.sql.extensions', 'io.delta.sql.DeltaSparkSessionExtension')
+        .config('spark.sql.catalog.spark_catalog', 'org.apache.spark.sql.delta.catalog.DeltaCatalog')
+        .config('spark.sql.warehouse.dir', str(tmp_path_factory.mktemp('warehouse')))
+        .config('spark.sql.session.timeZone', 'UTC')
+        .config('spark.sql.shuffle.partitions', '2')
+        .config('spark.ui.enabled', 'false')
+    )
+    session = configure_spark_with_delta_pip(builder).getOrCreate()
+    yield session
+    session.stop()
