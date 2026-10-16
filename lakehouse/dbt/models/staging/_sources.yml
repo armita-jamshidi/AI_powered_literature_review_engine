@@ -18,3 +18,13 @@ sources:
         columns:
           - name: claim_id
             data_tests: [unique, not_null]
+      - name: claims_rejects
+        description: Claims that failed silver's checks (the quarantine), one row per claim id, with a reject_reason.
+        columns:
+          - name: claim_id
+            data_tests: [unique, not_null]
+      - name: bronze_runs
+        description: One row per bronze export run and table, with the rows it exported (from the run manifests).
+        columns:
+          - name: run_id
+            data_tests: [not_null]

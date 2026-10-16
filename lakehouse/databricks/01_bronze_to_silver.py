@@ -3,13 +3,14 @@
 # MAGIC # Bronze → Silver (PySpark → Delta Lake)
 # MAGIC
 # MAGIC Reads the bronze Parquet snapshots written by `lakehouse/export/bronze_export.py`, then cleans,
-# MAGIC deduplicates and validates them, and writes three Delta tables:
+# MAGIC deduplicates and validates them, and writes four Delta tables:
 # MAGIC
 # MAGIC | Table | Grain | Notes |
 # MAGIC |---|---|---|
 # MAGIC | `<schema>.papers` | one row per paper id | `canonical_paper_id` / `is_duplicate_upload` flag re-uploads |
 # MAGIC | `<schema>.claims` | one row per claim id | normalized; `is_duplicate`, `is_deleted` flags |
 # MAGIC | `<schema>.claims_rejects` | one row per rejected claim | `reject_reason` says why |
+# MAGIC | `<schema>.bronze_runs` | one row per export run and table | rows exported, for the gold pipeline metrics |
 # MAGIC
 # MAGIC All transformation logic lives in `silver_transforms.py` next to this notebook, so it's
 # MAGIC unit-tested locally (`lakehouse/tests/test_silver_transforms.py`).
