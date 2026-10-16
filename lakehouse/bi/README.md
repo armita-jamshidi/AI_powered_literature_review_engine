@@ -1,6 +1,6 @@
 # Power BI dashboard on the gold layer
 
-Power BI Desktop connects to the Databricks SQL warehouse, imports the gold tables that dbt built in `workspace.evidentia_gold`, and shows them on one report page. The saved report is `evidentia_gold.pbix` in this folder, with a screenshot in `dashboard.png`.
+Power BI Desktop connects to the Databricks SQL warehouse, imports the gold tables that dbt built in `workspace.evidentia_gold`, and shows them on one report page. Step 4 saves the report as `evidentia_gold.pbix` in this folder, with a screenshot as `dashboard.png`.
 
 Power BI Desktop is free (Windows only). Install it from the Microsoft Store.
 
@@ -32,7 +32,9 @@ Open **Model view** (the third icon on the left). Delete any relationships Power
 | `fct_claims[claim_pair]` | `gold_weighted_disagreement[claim_pair]` |
 | `gold_claims_by_intervention_outcome[claim_pair]` | `gold_weighted_disagreement[claim_pair]` (one-to-one) |
 
-This is a small **star schema**: `fct_claims` is the fact table in the middle, and the other tables describe papers and intervention × outcome pairs. With these links, a slicer on intervention filters every visual on the page.
+This is a small **star schema**: `fct_claims` is the fact table in the middle, and the other tables describe papers and intervention × outcome pairs.
+
+Filters flow along a relationship from the *one* side to the *many* side, which is Power BI's default single direction. So a filter on `gold_weighted_disagreement` reaches `fct_claims`, but not the other way round. The one-to-one link to `gold_claims_by_intervention_outcome` filters both ways.
 
 ## 3. Build the page
 
@@ -52,7 +54,7 @@ Go back to **Report view** and add these visuals:
    - Y-axis: count of `fct_claims[claim_id]`
    - Legend: `fct_claims[study_type]`
 
-Click a bar or pick an intervention in the slicer, and the other visuals cross-filter.
+Picking an intervention in the slicer, or clicking a bar in either pair chart, filters the whole page. Clicking the confidence chart filters only the visuals built on `fct_claims` (the Claims and Papers cards), because of the filter direction above. You could set that relationship's cross-filter direction to **Both**, but single direction is the safer default: two-way filters can make totals ambiguous in larger models.
 
 ## 4. Save it to the repo
 

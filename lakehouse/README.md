@@ -27,7 +27,7 @@ Every layer is built. The Power BI steps are in [`bi/README.md`](bi/README.md).
 | `databricks/01_bronze_to_silver.py` | Databricks notebook: runs the silver job and its data quality checks. |
 | `databricks/silver_transforms.py` | The silver logic as plain PySpark functions (imported by the notebook, unit-tested locally). |
 | `dbt/` | The dbt project for the gold layer: staging views, a fact and a dimension table, three gold marts, a seed, and tests. |
-| `bi/` | Power BI Desktop steps, and the saved dashboard (`evidentia_gold.pbix`). |
+| `bi/` | Power BI Desktop steps, and where to save the dashboard (`evidentia_gold.pbix`). |
 | `tests/` | pytest suite. SQLite stands in for Postgres, `moto` fakes S3, and a local Spark session runs the silver tests. |
 
 ## Bronze: what the export job does
