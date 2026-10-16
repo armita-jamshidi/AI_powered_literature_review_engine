@@ -106,13 +106,13 @@ Each section follows the same shape: what we built, why, the trade-off, then lik
   - a custom generic test `value_between`
   - two singular tests: every claim counted exactly once in each mart, and pairs with only one result score exactly 0
 - **Credentials:** `profiles.yml` is committed but contains only `env_var()` calls.
-- **Tested without Databricks:** a second profile target runs the same project on local Spark + Delta. `test_dbt_gold.py` runs seed → bronze → silver → `dbt build`, then checks that every gold score equals the app's Python `weighted_majority_fraction()`.
+- **Tested without Databricks:** a second profile target runs the same project on local Spark + Delta. `test_dbt_gold.py` runs seed → bronze → silver → `dbt build`, then checks that every gold score equals a Python copy of the app's `weighted_majority_fraction()`. It's a copy, not an import, so the test doesn't need the app's dependencies; the trade-off is that the copy has to be kept in sync with `backend/app/pipeline.py` by hand.
 
 **Likely questions**
 - *Difference between a generic and a singular dbt test?* A generic test is parameterized and attached to columns in YAML (`unique`, or our `value_between`). A singular test is a one-off SQL file in `tests/`. Both fail when they return rows.
 - *View vs table materialization?* Views are cheap and always fresh but recompute on every query, so we use them for staging. Tables are precomputed and fast for BI, so marts are tables. Incremental models are the next step at scale.
 - *Why not do all of this in PySpark?* We could. dbt makes the business layer SQL that analysts can read and change, and gives tests, docs and lineage for free. PySpark is the better tool for the messy, row-level cleaning in silver.
-- *How do you know the numbers are right?* The reconciliation tests, plus the cross-check against the API's own Python implementation.
+- *How do you know the numbers are right?* The reconciliation tests, plus the cross-check against a Python copy of the API's formula.
 
 ---
 

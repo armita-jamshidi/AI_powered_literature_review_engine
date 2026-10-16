@@ -32,7 +32,7 @@ Evidentia reads research papers, pulls out what each one claims, and shows where
 - Added a seeded, deterministic fallback embedding (NumPy `default_rng(42)`), so the whole pipeline runs reproducibly offline without an API key.
 - Designed an **evidence-aggregation metric**: a **study-design-weighted majority vote**. Each claim votes for its result with a weight from an evidence hierarchy (RCT 1.0, quasi-experimental 0.8, observational 0.6, case-control 0.5, cross-sectional 0.45, case report 0.3). Disagreement is `1 − (winning weight / total weight)`: 0 when every study agrees, at most 0.75 with four outcomes. The unweighted version is reported alongside it, to show what design-weighting changes.
 - **Post-processed LLM output in the data pipeline**: PySpark maps free-text labels from the model onto a fixed vocabulary (`randomized controlled trial` → `rct`, `cohort` → `observational`, `no effect` → `null`). It detects confidences emitted on a 0–100 scale and rescales them to 0–1, and quarantines claims with invalid labels or missing fields, with a reason code, instead of letting them skew the scores.
-- Verified the metric end to end: a test runs the same claims through the Python implementation and the dbt SQL implementation and asserts the scores are identical.
+- Verified the metric end to end: a test recomputes every gold score with a Python copy of the API's formula and asserts the dbt SQL implementation produces identical scores.
 
 **Application backend**
 - Built a **FastAPI** backend whose `POST /ingest` returns immediately and runs parsing, embedding, extraction and clustering as a background **`asyncio`** task. A failing paper is marked `failed` with its error and never blocks the others.
@@ -65,13 +65,13 @@ Evidentia reads research papers, pulls out what each one claims, and shows where
 
 **Gold layer: ELT with dbt on Databricks**
 - Built a **dbt** project (`dbt-core` + `dbt-databricks`) that transforms silver inside the **Databricks SQL warehouse**. It has staging views, a **star schema** (`fct_claims` fact, `dim_papers` dimension), three gold marts and five pipeline-metrics models.
-- Loaded the study-design weights as a **dbt seed** (CSV) that mirrors the API's weights, with a test checking that gold scores match the API's for the same claims.
+- Loaded the study-design weights as a **dbt seed** (CSV) that mirrors the API's weights, with a test checking gold scores against a Python copy of the API's formula.
 - Wrote **63 data tests**:
   - `unique`, `not_null`, `accepted_values` and `relationships`;
   - a custom generic test (`value_between`);
   - singular tests that reconcile gold counts, check that unanimous pairs score 0, and fail the build if any row is lost between layers.
 - Added **pipeline observability** tables: row counts per layer, quarantine rate, export freshness by day, evidence per paper, and a one-row summary.
-- Verified end to end on local Spark: gold disagreement scores match the API's own `weighted_majority_fraction()` for the same claims. The seed can append batches of hundreds of papers (tested at 252 papers and 1,084 claims).
+- Verified end to end on local Spark: gold disagreement scores match a Python copy of the API's `weighted_majority_fraction()` for the same claims. The seed can append batches of hundreds of papers (tested at 252 papers and 1,084 claims).
 - Documented every model and column in dbt YAML, browsable as **dbt docs** with a lineage graph. The `profiles.yml` holds no secrets, only `env_var()` lookups.
 
 **BI: Power BI**
