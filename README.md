@@ -17,13 +17,26 @@ Evidentia reads research papers, pulls out what each one claims, and shows where
 
 ## What I built
 
-**Application (OLTP)**
-- Built a **FastAPI** backend with **asynchronous** paper ingestion (`POST /ingest`), so one failing paper is marked `failed` with its error and never blocks the others.
-- Parsed PDFs with **PyMuPDF** and split the text into overlapping chunks (1,500 characters, 200 overlap). Embedded the chunks into a **Chroma** vector store.
-- Extracted structured claims (population, intervention, outcome, result, study type, confidence) with the **OpenAI API** (`gpt-4o-mini`, JSON output), with a deterministic heuristic fallback when no API key is set.
-- Clustered semantically similar claims within each paper with **scikit-learn** agglomerative clustering on **cosine distance** over OpenAI embeddings (`text-embedding-3-small`). Claims are grouped across papers by their normalized intervention → outcome pair.
-- Designed a **study-design-weighted disagreement score**, `1 − (weight of the winning result / total weight)`, with RCTs weighted 1.0 down to case reports at 0.3.
-- Stored papers, chunks and claims in **PostgreSQL** through async **SQLAlchemy 2.0** + **asyncpg**, with **Pydantic** schemas, and added a TTL cache for the `/claims` and `/heatmap` endpoints that is invalidated on every ingest.
+**AI / NLP pipeline**
+- Built an **LLM structured-extraction** step: each paper's text (truncated to a 12,000-character context budget) goes to **GPT-4o-mini** through the async **OpenAI Responses API**. A system prompt asks for up to 8 claims as a JSON array with a fixed schema: population, intervention, outcome, result (`positive | negative | null | mixed`), study type, and confidence.
+- Parsed the model output into typed `ExtractedClaim` dataclasses, with per-field defaults and label normalization (lower-cased results and study types, float-coerced confidence). Any API or JSON-parse failure is logged and falls back to a **rule-based extractor**: regex sentence splitting plus keyword polarity rules (`increase`/`improve` → positive, `decrease`/`reduction` → negative, `no significant` → null). Ingestion never stalls on a bad model response.
+- Built the **document processing** step:
+  - parsed PDFs with **PyMuPDF** (`fitz`) page by page;
+  - split the text into **overlapping chunks** (1,500-character windows, 200-character overlap) so sentences on a boundary keep their context;
+  - embedded the chunks in batches with **`text-embedding-3-small`**;
+  - indexed them in a persistent **Chroma** vector collection, with `paper_id` and `chunk_index` metadata and deterministic `paper_id:chunk` ids.
+- **Clustered claims semantically**:
+  - embedded each claim's "intervention + outcome" string;
+  - grouped near-duplicate claims within a paper with **scikit-learn `AgglomerativeClustering`** (average linkage, **cosine distance**, `distance_threshold=0.25`), so the number of clusters is learned rather than fixed in advance;
+  - stored the cluster id in the claim key; across papers, claims are grouped by their normalized intervention → outcome pair.
+- Added a seeded, deterministic fallback embedding (NumPy `default_rng(42)`), so the whole pipeline runs reproducibly offline without an API key.
+- Designed an **evidence-aggregation metric**: a **study-design-weighted majority vote**. Each claim votes for its result with a weight from an evidence hierarchy (RCT 1.0, quasi-experimental 0.8, observational 0.6, case-control 0.5, cross-sectional 0.45, case report 0.3). Disagreement is `1 − (winning weight / total weight)`: 0 when every study agrees, at most 0.75 with four outcomes. The unweighted version is reported alongside it, to show what design-weighting changes.
+- **Post-processed LLM output in the data pipeline**: PySpark maps free-text labels from the model onto a fixed vocabulary (`randomized controlled trial` → `rct`, `cohort` → `observational`, `no effect` → `null`). It detects confidences emitted on a 0–100 scale and rescales them to 0–1, and quarantines claims with invalid labels or missing fields, with a reason code, instead of letting them skew the scores.
+- Verified the metric end to end: a test runs the same claims through the Python implementation and the dbt SQL implementation and asserts the scores are identical.
+
+**Application backend**
+- Built a **FastAPI** backend whose `POST /ingest` returns immediately and runs parsing, embedding, extraction and clustering as a background **`asyncio`** task. A failing paper is marked `failed` with its error and never blocks the others.
+- Stored papers, chunks and claims in **PostgreSQL** through async **SQLAlchemy 2.0** + **asyncpg**, with **Pydantic** schemas and **pydantic-settings** config. Added a TTL cache for `/claims` and `/heatmap` that is invalidated on every ingest.
 - Built a dashboard UI with a **Plotly** intervention × outcome disagreement heatmap, and containerized the stack with **Docker Compose** (Postgres 16 + API).
 
 **Bronze layer: ETL from Postgres to the data lake (AWS S3)**
@@ -82,7 +95,7 @@ Evidentia reads research papers, pulls out what each one claims, and shows where
 |---|---|
 | Languages | Python, SQL (Spark SQL / Databricks SQL, Jinja-templated dbt SQL), DAX, HTML/JavaScript |
 | Application | FastAPI, Uvicorn, Pydantic, SQLAlchemy 2.0 (async), asyncpg, PostgreSQL 16 |
-| AI / ML | OpenAI API (GPT-4o-mini, text-embedding-3-small), Chroma vector database, scikit-learn (agglomerative clustering, cosine similarity), NumPy, PyMuPDF |
+| AI / ML | OpenAI API (Responses API, GPT-4o-mini, text-embedding-3-small), LLM structured extraction, prompt design, Chroma vector database, embeddings, scikit-learn (agglomerative clustering, cosine distance), NumPy, PyMuPDF, document chunking |
 | Data lake | AWS S3, AWS IAM (least-privilege policy), AWS Budgets, boto3, Apache Parquet, pyarrow, Hive partitioning |
 | Lakehouse | Databricks (Free Edition, serverless compute, SQL warehouse, Unity Catalog, volumes, Git folders, notebooks), Apache Spark / PySpark, Delta Lake (`MERGE` upserts, ACID transaction log) |
 | Transformation | dbt Core, dbt-databricks, dbt seeds, generic and singular tests, dbt docs |
