@@ -14,6 +14,8 @@ What silver guarantees, compared with bronze:
   * normalized text, study types, results and confidences
   * invalid rows routed to a rejects table with a reason, never silently dropped
   * duplicate uploads of the same paper (and their claims) flagged
+  * a `bronze_runs` table listing every export run and its row counts, so gold
+    can report pipeline metrics (rows per layer, freshness) without reading bronze
 """
 from __future__ import annotations
 
@@ -54,6 +56,18 @@ BRONZE_CLAIMS_SCHEMA = T.StructType([
     T.StructField('study_type', T.StringType()),
     T.StructField('confidence', T.DoubleType()),
     *_LINEAGE,
+])
+
+# One manifest per export run (see bronze_export.run_export). `tables` maps a
+# table name to {"rows": ..., "uri": ...}; a map keeps this working if tables are added.
+MANIFEST_SCHEMA = T.StructType([
+    T.StructField('run_id', T.StringType()),
+    T.StructField('ingest_date', T.StringType()),
+    T.StructField('exported_at', T.StringType()),
+    T.StructField('tables', T.MapType(T.StringType(), T.StructType([
+        T.StructField('rows', T.LongType()),
+        T.StructField('uri', T.StringType()),
+    ]))),
 ])
 
 # --- Vocabularies -----------------------------------------------------------
@@ -100,6 +114,17 @@ def complete_run_ids(spark: SparkSession, bronze_path: str) -> list[str]:
     except AnalysisException:  # the glob matched nothing
         return []
     return sorted(r.run_id for r in manifests.select('run_id').distinct().collect())
+
+
+def build_bronze_runs(spark: SparkSession, bronze_path: str) -> DataFrame:
+    """One row per (export run, table) with the number of rows that run exported."""
+    manifests = spark.read.schema(MANIFEST_SCHEMA).option('multiLine', True).json(f'{bronze_path}/_manifests/*.json')
+    return manifests.select(
+        'run_id',
+        F.to_date('ingest_date').alias('ingest_date'),
+        F.to_timestamp('exported_at').alias('exported_at'),
+        F.explode('tables').alias('source_table', '_t'),
+    ).select('run_id', 'ingest_date', 'exported_at', 'source_table', F.col('_t.rows').alias('n_rows'))
 
 
 def read_bronze(spark: SparkSession, bronze_path: str, table: str, schema: T.StructType,
@@ -288,6 +313,8 @@ def run_bronze_to_silver(spark: SparkSession, bronze_path: str, schema: str) -> 
     merge_into_delta(spark, claims, f'{schema}.claims', 'claim_id')
     # Rejects describe the current state of the source, so they're replaced each run.
     overwrite_delta(rejects, f'{schema}.claims_rejects')
+    # Export history for the gold pipeline metrics. Rebuilt from the manifests each run.
+    overwrite_delta(build_bronze_runs(spark, bronze_path), f'{schema}.bronze_runs')
 
     return {
         'runs_read': len(run_ids),

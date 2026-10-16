@@ -72,7 +72,7 @@ def test_dbt_build_passes_every_model_seed_and_test(gold):
     statuses = defaultdict(int)
     for r in result.result:
         statuses[(r.node.resource_type, str(r.status))] += 1
-    assert statuses[('model', 'success')] == 7
+    assert statuses[('model', 'success')] == 12
     assert statuses[('seed', 'success')] == 1
     assert not [r.node.name for r in result.result if str(r.status) not in ('success', 'pass')]
     assert sum(n for (kind, _), n in statuses.items() if kind == 'test') >= 20
@@ -92,3 +92,29 @@ def test_weighted_disagreement_matches_api_formula(gold):
         results, types = by_pair[(row.intervention, row.outcome)]
         expected = round(1 - weighted_majority_fraction(results, types), 4)
         assert row.weighted_disagreement_score == pytest.approx(expected, abs=1e-4), row.claim_pair
+
+
+def test_pipeline_metrics_on_seeded_data(gold):
+    spark, _ = gold
+    layers = {(r.layer, r.table_name): r.n_rows
+              for r in spark.table('evidentia_gold.metrics_layer_row_counts').collect()}
+    # The seed's 42 papers and 196 claims, of which silver quarantines the 2 'improved' results.
+    assert layers[('bronze', 'papers')] == 42 and layers[('bronze', 'claim_evidence')] == 196
+    assert layers[('silver', 'claims')] == 194 and layers[('silver', 'claims_rejects')] == 2
+    assert layers[('gold', 'dim_papers')] == 40  # the 2 re-uploads merge into their originals
+
+    quarantine = {r.check_outcome: r for r in spark.table('evidentia_gold.metrics_quarantine').collect()}
+    assert quarantine['passed'].n_claims == 194 and quarantine['invalid_result'].n_claims == 2
+
+    summary = spark.table('evidentia_gold.metrics_pipeline_summary').collect()
+    assert len(summary) == 1
+    assert summary[0].quarantine_rate == pytest.approx(2 / 196, abs=1e-4)
+    assert summary[0].n_export_runs == 1 and summary[0].failed_papers == 2
+
+    per_paper = spark.table('evidentia_gold.metrics_evidence_per_paper').collect()
+    assert len(per_paper) == 40
+    assert sum(r.n_claims for r in per_paper) == layers[('gold', 'fct_claims')]
+    assert not any(r.has_evidence for r in per_paper if r.ingest_status == 'failed')
+
+    freshness = spark.table('evidentia_gold.metrics_freshness_by_ingest_date').collect()
+    assert [(str(r.ingest_date), r.papers_rows, r.claims_rows) for r in freshness] == [('2026-10-01', 42, 196)]

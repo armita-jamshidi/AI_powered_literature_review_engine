@@ -28,6 +28,7 @@ Every layer is built. The Power BI steps are in [`bi/README.md`](bi/README.md).
 | `databricks/silver_transforms.py` | The silver logic as plain PySpark functions (imported by the notebook, unit-tested locally). |
 | `dbt/` | The dbt project for the gold layer: staging views, a fact and a dimension table, three gold marts, a seed, and tests. |
 | `bi/` | Power BI Desktop steps, and where to save the dashboard (`evidentia_gold.pbix`). |
+| `dbt/` | The dbt project for the gold layer: staging views, a fact and a dimension table, three gold marts, five pipeline metrics tables, a seed, and tests. |
 | `tests/` | pytest suite. SQLite stands in for Postgres, `moto` fakes S3, and a local Spark session runs the silver tests. |
 
 ## Bronze: what the export job does
@@ -42,7 +43,7 @@ Each run is a **full snapshot**: a claim exported on Monday and again on Tuesday
 
 ## Silver: what the PySpark job does
 
-`silver_transforms.run_bronze_to_silver` reads **every complete bronze run** (one with a manifest) and writes three Delta tables:
+`silver_transforms.run_bronze_to_silver` reads **every complete bronze run** (one with a manifest) and writes four Delta tables: `papers`, `claims`, `claims_rejects`, and `bronze_runs` (one row per export run and table, with its row count from the manifest, used by the gold metrics). For `papers` and `claims` it:
 
 1. **Enforces a schema.** Parquet is read with an explicit `StructType`, so a drifted file fails loudly instead of changing a column type downstream.
 2. **Dedupes snapshots.** Bronze holds each row once *per run*. A window (`row_number() over (partition by id order by _exported_at desc)`) keeps the newest version of each id. An id missing from the newest snapshot was deleted in Postgres, so it's kept and flagged `is_deleted` (a *soft delete*).
@@ -67,9 +68,36 @@ Silver gets data *loaded* into Databricks. Gold then *transforms it inside the w
 | `gold_weighted_disagreement` | table | `1 − (weight of the winning result / total weight)` per pair, plus the unweighted score for comparison. |
 | `gold_confidence_distribution` | table | Confidence histogram by study type and result. |
 
-**Tests (43 in all):** `unique`/`not_null` on every key; `accepted_values` on `result` and `ingest_status`; `relationships` from claims to papers and to the weights seed; a custom generic test `value_between` (confidence in [0, 1], disagreement in [0, 0.75]); and two singular tests. One checks that every claim is counted exactly once in each mart, the other that a pair whose claims all agree scores 0.
+**Tests (63 in all, including the metrics tests below):** `unique`/`not_null` on every key; `accepted_values` on `result` and `ingest_status`; `relationships` from claims to papers and to the weights seed; a custom generic test `value_between` (confidence in [0, 1], disagreement in [0, 0.75]); and two singular tests. One checks that every claim is counted exactly once in each mart, the other that a pair whose claims all agree scores 0.
 
 `lakehouse/tests/test_dbt_gold.py` runs the whole chain (seed → bronze → silver → `dbt build`) on a local Spark session. It also checks that every gold disagreement score equals what the API's `weighted_majority_fraction()` computes from the same claims. On the seeded data, `mindfulness meditation → anxiety symptoms` disagrees most (0.66), and `statins → ldl cholesterol` disagrees least (0.0).
+
+### Pipeline metrics (`models/metrics/`)
+
+These tables describe the pipeline itself rather than the research findings. They are ordinary dbt models in `evidentia_gold`, so they're built and tested by the same `dbt build`.
+
+| Model | Grain | What it tells you |
+|---|---|---|
+| `metrics_layer_row_counts` | one row per layer table | Rows in bronze (latest export), silver (passed and quarantined) and gold, in pipeline order. |
+| `metrics_quarantine` | one row per check outcome | How many live claims passed silver's checks, and how many were quarantined for each reason, with shares. |
+| `metrics_evidence_per_paper` | one row per live paper | Claims, distinct intervention → outcome pairs, summed study-design weight and average confidence. |
+| `metrics_freshness_by_ingest_date` | one row per export day | Runs that day, when the last one finished, rows exported, change since the previous export day, and days ago. |
+| `metrics_pipeline_summary` | one row | Headline numbers: last export time and hours since, quarantine rate, failed-ingest rate, papers and claims per layer. |
+
+A singular test, `assert_no_rows_lost_between_layers`, fails the build if any paper or claim in the latest bronze export is missing from silver (every exported claim must either pass or be quarantined). On the seeded data: 42 papers and 196 claims in bronze, 194 claims passed and 2 quarantined (a 1.02% quarantine rate), and 40 papers in gold once the 2 re-uploads merge into their originals. After appending 200 papers: 252 papers and 1,084 claims in bronze, 15 quarantined (1.38%).
+
+## Adding more papers
+
+Papers reach Postgres in two ways: uploading a PDF or text file to the app's `POST /ingest`, or the synthetic seed. Without an OpenAI key the app's extractor only produces placeholder claims, so the seed is the way to grow the demo data. It can add a batch on top of what's there:
+
+```powershell
+python -m lakehouse.seed.seed_demo_data --append --papers 200   # add 200 more papers
+python -m lakehouse.seed.seed_demo_data --reset --papers 500    # or start over with 500
+```
+
+An appended batch continues the numbering (`paper_041.txt`, ...), has its own random seed, and is dated over the last 30 days. Every 40 papers bring the same mix of mess (4 rescaled confidences, 3 `no effect`, 2 `improved`, 2 re-uploads, 2 failed ingests), so silver keeps having work to do and the quarantine rate stays meaningful. Running the seed a second time without `--append` or `--reset` stops with a message instead of inserting copies.
+
+Then send the new data through the pipeline: run the bronze export, the silver notebook, and `dbt build`. The step-by-step version is in "Running it after adding papers" below.
 
 ## Running it locally (Windows PowerShell)
 
@@ -165,3 +193,24 @@ Free Edition is free and has no credit card. If you go over its daily compute qu
    `dbt docs generate` needs Databricks; it doesn't work on the local Spark test target.
 
 **Databricks teardown:** delete the token under **Settings → Developer → Access tokens**. Then run `DROP SCHEMA workspace.evidentia CASCADE`, `DROP SCHEMA workspace.evidentia_silver CASCADE` and `DROP SCHEMA workspace.evidentia_gold CASCADE` in the SQL editor.
+
+## Running it after adding papers (Windows PowerShell + Databricks)
+
+1. **Postgres must be running.** Open Docker Desktop, then in PowerShell, from the repo root: `docker compose up -d`.
+2. **Add papers.** In the lakehouse environment:
+   ```powershell
+   .\.venv-lakehouse\Scripts\Activate.ps1
+   python -m lakehouse.seed.seed_demo_data --append --papers 200
+   ```
+3. **Export to bronze** (S3 and the Databricks volume): `python -m lakehouse.export.bronze_export --target s3,volume`
+4. **Update the Git folder in Databricks.** Open **Workspace → Home →** the repo's Git folder, click the branch name at the top, then **Pull**.
+5. **Rebuild silver.** Open `lakehouse/databricks/01_bronze_to_silver` and click **Run all**.
+6. **Rebuild gold and the metrics.** In a new PowerShell window, from the repo root:
+   ```powershell
+   .\.venv-dbt\Scripts\Activate.ps1
+   Get-Content lakehouse\.env | Where-Object { $_ -match '^[A-Z_]+=' } | ForEach-Object {
+       $name, $value = $_ -split '=', 2; Set-Item "env:$name" $value }
+   cd lakehouse\dbt
+   dbt build --profiles-dir .
+   ```
+7. **Look at the metrics.** In Databricks, open **Catalog → workspace → evidentia_gold**, click `metrics_pipeline_summary`, then the **Sample data** tab. Or open **SQL Editor** and run `SELECT * FROM workspace.evidentia_gold.metrics_layer_row_counts ORDER BY step`.

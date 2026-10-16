@@ -1,0 +1,62 @@
+version: 2
+
+models:
+  - name: metrics_layer_row_counts
+    description: >
+      Rows per layer for the current data, in pipeline order (bronze -> silver -> gold).
+      Bronze claims = silver passed + silver quarantined, which a singular test checks.
+    columns:
+      - name: step
+        data_tests: [unique, not_null]
+      - name: n_rows
+        data_tests: [not_null]
+
+  - name: metrics_quarantine
+    description: Live claims by silver outcome ('passed' or a reject reason), with each outcome's share.
+    columns:
+      - name: check_outcome
+        data_tests: [unique, not_null]
+      - name: share_of_claims
+        data_tests:
+          - value_between:
+              arguments:
+                min_value: 0
+                max_value: 1
+
+  - name: metrics_evidence_per_paper
+    description: One row per live paper with its claim count, distinct claim pairs and summed study weight.
+    columns:
+      - name: paper_id
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_papers')
+                field: paper_id
+      - name: n_claims
+        data_tests: [not_null]
+
+  - name: metrics_freshness_by_ingest_date
+    description: >
+      One row per ingest_date (the day a bronze export ran): how many runs, when the last
+      one finished, the rows it exported, and the change since the previous export day.
+    columns:
+      - name: ingest_date
+        data_tests: [unique, not_null]
+      - name: days_ago
+        description: Days between that export and today. 0 means the data was exported today.
+
+  - name: metrics_pipeline_summary
+    description: One row of headline pipeline numbers (freshness, quarantine rate, evidence per paper).
+    columns:
+      - name: latest_run_id
+        data_tests: [unique, not_null]
+      - name: quarantine_rate
+        description: Quarantined claims / claims in the latest export.
+        data_tests:
+          - not_null
+          - value_between:
+              arguments:
+                min_value: 0
+                max_value: 1

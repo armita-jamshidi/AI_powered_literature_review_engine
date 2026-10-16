@@ -129,6 +129,12 @@ def test_end_to_end_from_bronze_export_is_idempotent(spark, schema, engine, tmp_
         Row(reject_reason='invalid_result', count=first['claims_rejected'])
     ]
     assert claims.where("result_raw = 'no effect'").count() > 0
+    # bronze_runs records both exports, one row per run and table, with the manifests' row counts.
+    runs = {(r.run_id, r.source_table): r for r in spark.table(f'{schema}.bronze_runs').collect()}
+    assert len(runs) == 4
+    latest = runs[('20261002T120000Z', 'claim_evidence')]
+    assert latest.n_rows == n_source and str(latest.ingest_date) == '2026-10-02'
+    assert runs[('20261001T120000Z', 'claim_evidence')].n_rows == n_source + 1
     version_after_first = spark.sql(f'DESCRIBE HISTORY {schema}.claims').count()
 
     second = st.run_bronze_to_silver(spark, bronze_path, schema)
