@@ -10,7 +10,7 @@ Evidentia reads research papers, pulls out what each one claims, and shows where
 
 1. **You upload papers.** Each paper is a PDF or text file about a health question, for example "does aspirin lower cardiovascular mortality?".
 2. **The app reads each paper and writes down its claims** in a fixed format: who was studied, what was tried (the *intervention*), what was measured (the *outcome*), what was found (positive, negative, no effect, or mixed), and what kind of study it was. A randomized controlled trial counts for more than a single case report.
-3. **Similar claims from different papers are grouped**, so "aspirin → cardiovascular mortality" from ten papers sits together.
+3. **Claims about the same question are grouped.** Every paper's "aspirin → cardiovascular mortality" claim sits in one group, whichever paper it came from.
 4. **Each group gets a disagreement score.** If every study found the same thing, the score is 0. If the studies are split, it's high. Stronger study designs get a bigger vote.
 5. **A separate data pipeline copies the data out of the app** and cleans it in stages: raw copy (bronze), cleaned (silver), and analysis-ready (gold). It then serves it to a dashboard, so analysis never slows the app down.
 6. **The dashboard answers questions at a glance:** which research questions are settled, which are contested, and how strong the evidence behind each one is.
@@ -21,7 +21,7 @@ Evidentia reads research papers, pulls out what each one claims, and shows where
 - Built a **FastAPI** backend with **asynchronous** paper ingestion (`POST /ingest`), so one failing paper is marked `failed` with its error and never blocks the others.
 - Parsed PDFs with **PyMuPDF** and split the text into overlapping chunks (1,500 characters, 200 overlap). Embedded the chunks into a **Chroma** vector store.
 - Extracted structured claims (population, intervention, outcome, result, study type, confidence) with the **OpenAI API** (`gpt-4o-mini`, JSON output), with a deterministic heuristic fallback when no API key is set.
-- Clustered semantically similar claims with **scikit-learn** agglomerative clustering on **cosine distance** over OpenAI embeddings (`text-embedding-3-small`).
+- Clustered semantically similar claims within each paper with **scikit-learn** agglomerative clustering on **cosine distance** over OpenAI embeddings (`text-embedding-3-small`). Claims are grouped across papers by their normalized intervention → outcome pair.
 - Designed a **study-design-weighted disagreement score**, `1 − (weight of the winning result / total weight)`, with RCTs weighted 1.0 down to case reports at 0.3.
 - Stored papers, chunks and claims in **PostgreSQL** through async **SQLAlchemy 2.0** + **asyncpg**, with **Pydantic** schemas, and added a TTL cache for the `/claims` and `/heatmap` endpoints that is invalidated on every ingest.
 - Built a dashboard UI with a **Plotly** intervention × outcome disagreement heatmap, and containerized the stack with **Docker Compose** (Postgres 16 + API).
@@ -52,7 +52,7 @@ Evidentia reads research papers, pulls out what each one claims, and shows where
 
 **Gold layer: ELT with dbt on Databricks**
 - Built a **dbt** project (`dbt-core` + `dbt-databricks`) that transforms silver inside the **Databricks SQL warehouse**. It has staging views, a **star schema** (`fct_claims` fact, `dim_papers` dimension), three gold marts and five pipeline-metrics models.
-- Loaded the study-design weights as a **dbt seed** (CSV), so the warehouse and the API share one source of truth.
+- Loaded the study-design weights as a **dbt seed** (CSV) that mirrors the API's weights, with a test checking that gold scores match the API's for the same claims.
 - Wrote **63 data tests**:
   - `unique`, `not_null`, `accepted_values` and `relationships`;
   - a custom generic test (`value_between`);
