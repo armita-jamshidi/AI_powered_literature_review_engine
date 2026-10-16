@@ -21,6 +21,8 @@ models:
       +materialized: view
     marts:
       +materialized: table
+    metrics:
+      +materialized: table
 
 seeds:
   evidentia:

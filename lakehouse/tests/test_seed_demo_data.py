@@ -1,11 +1,15 @@
 from collections import Counter
 
+import pytest
 from sqlalchemy import text
 
 from lakehouse.seed.seed_demo_data import (
     SYNTHETIC_PREFIX,
+    count_synthetic,
     generate_dataset,
     insert_dataset,
+    main,
+    next_paper_number,
     reset_synthetic,
 )
 
@@ -57,3 +61,33 @@ def test_values_fit_postgres_column_lengths():
         for claim in paper.claims:
             assert len(claim['result']) <= 16
             assert len(claim['study_type']) <= 64
+
+
+def test_mess_scales_with_a_bigger_batch():
+    papers = generate_dataset(n_papers=200)
+    claims = [c for p in papers[:200] for c in p.claims]  # leave out the re-uploads' copied claims
+    assert sum(c['result'] == 'improved' for c in claims) == 10  # 2 per 40 papers
+    assert sum(p.ingest_status == 'failed' for p in papers) == 10
+    assert len(papers) == 200 + 10  # plus 2 re-uploads per 40 papers
+
+
+def test_appended_batch_continues_the_numbering(engine):
+    insert_dataset(engine, generate_dataset(n_papers=40))
+    assert next_paper_number(engine) == 41
+    batch = generate_dataset(n_papers=40, seed=41, first_number=41)
+    first_batch_files = {p.source_filename for p in generate_dataset(n_papers=40)}
+    assert not first_batch_files & {p.source_filename for p in batch}
+    assert sum(p.ingest_status == 'failed' for p in batch) == 2
+
+
+def test_cli_refuses_to_duplicate_and_appends(engine, monkeypatch, capsys):
+    monkeypatch.setattr('lakehouse.seed.seed_demo_data.make_engine', lambda: engine)
+    main(['--papers', '10'])
+    first = count_synthetic(engine)
+    with pytest.raises(SystemExit, match='--append'):
+        main(['--papers', '10'])
+    main(['--append', '--papers', '10'])
+    assert count_synthetic(engine) > first
+    with engine.connect() as conn:
+        files = conn.execute(text('SELECT source_filename FROM papers')).scalars().all()
+    assert 'synthetic/paper_011.txt' in files
