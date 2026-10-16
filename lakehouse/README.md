@@ -13,7 +13,7 @@ flowchart LR
     G --> BI[Power BI]
 ```
 
-Bronze, silver and gold exist so far. The Power BI dashboard arrives in a later PR.
+Every layer is built. The Power BI steps are in [`bi/README.md`](bi/README.md).
 
 ## Layout
 
@@ -26,6 +26,8 @@ Bronze, silver and gold exist so far. The Power BI dashboard arrives in a later 
 | `databricks/00_probe_s3_access.py` | Databricks notebook: checks whether Free Edition can reach your S3 bucket, and creates the landing volume. |
 | `databricks/01_bronze_to_silver.py` | Databricks notebook: runs the silver job and its data quality checks. |
 | `databricks/silver_transforms.py` | The silver logic as plain PySpark functions (imported by the notebook, unit-tested locally). |
+| `dbt/` | The dbt project for the gold layer: staging views, a fact and a dimension table, three gold marts, a seed, and tests. |
+| `bi/` | Power BI Desktop steps, and where to save the dashboard (`evidentia_gold.pbix`). |
 | `dbt/` | The dbt project for the gold layer: staging views, a fact and a dimension table, three gold marts, five pipeline metrics tables, a seed, and tests. |
 | `tests/` | pytest suite. SQLite stands in for Postgres, `moto` fakes S3, and a local Spark session runs the silver tests. |
 
