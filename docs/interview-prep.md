@@ -73,7 +73,7 @@ Each section follows the same shape: what we built, why, the trade-off, then lik
 
 ## 4. The Databricks Free Edition constraint
 
-**What happened:** Free Edition runs only serverless compute, limits outbound internet to trusted domains, and doesn't let you configure your own storage (no storage credentials or external locations for your bucket). `00_probe_s3_access.py` tests this directly.
+**What happened:** Free Edition runs only serverless compute, limits outbound internet to trusted domains, and doesn't let you configure your own storage (no storage credentials or external locations for your bucket). `00_probe_s3_access.py` tests this directly. When I ran it on my workspace, the network check reached S3 (S3 answered with HTTP 403, so the host is reachable), but the Spark read failed with `UNAUTHORIZED_ACCESS`, and the workspace had 0 storage credentials. That confirmed the limitation rather than assuming it.
 
 **Decision:** Keep S3 as the data lake of record, and have the export job *also* upload the same files into a Unity Catalog **volume** (`--target s3,volume`, through the Databricks SDK Files API). Databricks reads the volume.
 
@@ -99,7 +99,7 @@ Each section follows the same shape: what we built, why, the trade-off, then lik
 - **Staging → marts layering.** Staging only renames and filters: it drops deleted rows and duplicates and maps claims to the canonical paper. Business logic lives in marts. `fct_claims` / `dim_papers` form a small star schema that Power BI can relate.
 - **Weights as a seed.** A CSV in git is reviewable, testable (`unique`, `relationships`), and identical to `STUDY_WEIGHTS` in the app.
 - **The disagreement metric:** each claim votes for its result with its study design's weight. The score is `1 − (weight of the winning result / total weight)`, which is 0 when every study agrees and at most 0.75 with four results. The unweighted score sits next to it to show what weighting changes.
-- **Tests (43):**
+- **Tests (43 for the marts; `dbt build` passed 51/51 nodes on Databricks. The pipeline-metrics models later brought the total to 63):**
   - `unique` and `not_null` on keys
   - `accepted_values` on `result`
   - `relationships` from claims to papers and to the weights seed
@@ -118,7 +118,29 @@ Each section follows the same shape: what we built, why, the trade-off, then lik
 
 ## 6. BI: Power BI
 
-*(Filled in once the dashboard is built.)* Power BI connects to the Databricks SQL warehouse with the Azure Databricks connector (server hostname + HTTP path + personal access token) and imports the gold tables.
+**What:** a one-page Power BI Desktop report (`lakehouse/bi/evidentia_gold.pbix`, screenshot in `lakehouse/bi/dashboard.png`) on the gold tables:
+- KPI cards: 161 claims, 38 papers, 18 intervention → outcome pairs
+- an intervention slicer that filters every visual
+- a bar chart of weighted vs. unweighted disagreement per pair
+- a 100% stacked bar of what the studies found (positive / negative / null / mixed) per pair
+- a stacked column chart of claim confidence, bucketed and colored by study type
+
+**Decisions and why:**
+- **Azure Databricks connector, Import mode.** The connector takes the warehouse's server hostname, HTTP path and a personal access token. Import copies the (tiny) gold tables into the report, so visuals are instant and the serverless warehouse doesn't have to stay awake. DirectQuery would send every click to the warehouse, which only makes sense for large or near-real-time data.
+- **Star schema in the model view:**
+  - `fct_claims[paper_id]` → `dim_papers` (many-to-one);
+  - `fct_claims[claim_pair]` → `gold_weighted_disagreement` (many-to-one);
+  - `gold_claims_by_intervention_outcome` ↔ `gold_weighted_disagreement` on `claim_pair` (one-to-one, filtering both ways).
+  The fact table sits in the middle, and filters flow from the "one" side to the "many" side.
+- **Explicit DAX measures** instead of dragging raw columns: `Papers = DISTINCTCOUNT(fct_claims[paper_id])` and `Pairs = COUNTROWS(gold_weighted_disagreement)`. `paper_id` is text, so Power BI would otherwise treat it as a category, not a number to count.
+- **Summarization fix.** The disagreement columns defaulted to "Don't summarize", so the bar chart wouldn't aggregate them. I set their default to Average in Column tools.
+- **Why 161 and 38, not 194 and 42?** Gold counts each finding once. Silver flags 33 semantic duplicates, and 2 re-uploaded papers merge into their originals. The cards count papers that have at least one live claim.
+
+**Likely questions**
+- *Import vs DirectQuery?* Import is a cached copy: fast, and works offline, but only as fresh as the last refresh. DirectQuery runs every visual as a live SQL query: always fresh, but slower, and it costs warehouse compute. A middle option is a composite model, where large facts use DirectQuery and small dimensions use Import.
+- *What is cross-filter direction?* It's which way a filter travels across a relationship. Single direction (from dimension to fact) is the default and is predictable. "Both" is useful for a one-to-one link like the two pair-level marts, but on many-to-many links it can create ambiguous paths.
+- *Measure vs calculated column?* A calculated column is computed per row at refresh and stored. A measure is computed at query time in the current filter context, which is why `Papers` responds to the slicer.
+- *Why do the aggregation in dbt instead of DAX?* Logic in dbt is versioned, tested and reusable by any tool. DAX should mostly be thin measures over clean, tested tables.
 
 ---
 
