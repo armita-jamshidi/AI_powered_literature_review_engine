@@ -70,7 +70,7 @@ Silver gets data *loaded* into Databricks. Gold then *transforms it inside the w
 
 **Tests (63 in all, including the metrics tests below):** `unique`/`not_null` on every key; `accepted_values` on `result` and `ingest_status`; `relationships` from claims to papers and to the weights seed; a custom generic test `value_between` (confidence in [0, 1], disagreement in [0, 0.75]); and two singular tests. One checks that every claim is counted exactly once in each mart, the other that a pair whose claims all agree scores 0.
 
-`lakehouse/tests/test_dbt_gold.py` runs the whole chain (seed → bronze → silver → `dbt build`) on a local Spark session. It also checks that every gold disagreement score equals what the API's `weighted_majority_fraction()` computes from the same claims. On the seeded data, `mindfulness meditation → anxiety symptoms` disagrees most (0.66), and `statins → ldl cholesterol` disagrees least (0.0).
+`lakehouse/tests/test_dbt_gold.py` runs the whole chain (seed → bronze → silver → `dbt build`) on a local Spark session. It also checks that every gold disagreement score equals what a copy of the API's `weighted_majority_fraction()` (kept in the test, so it needs none of the app's dependencies) computes from the same claims. On the seeded data, `mindfulness meditation → anxiety symptoms` disagrees most (0.66), and `statins → ldl cholesterol` disagrees least (0.0).
 
 ### Pipeline metrics (`models/metrics/`)
 
